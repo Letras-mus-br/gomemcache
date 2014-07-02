@@ -3,7 +3,10 @@ package memcache
 import (
 	"bufio"
 	"log"
+	"net"
 )
+
+type memcacheOpFunc func(*RedundantWriteClient, *bufio.ReadWriter, *Item) error
 
 type RedundantWriteClient struct {
 	Client
@@ -34,7 +37,7 @@ func (c *RedundantWriteClient) CompareAndSwap(item *Item) error {
 	return c.onItem(item, (*RedundantWriteClient).cas)
 }
 
-func (c *RedundantWriteClient) onItem(item *Item, fn func(*RedundantWriteClient, *bufio.ReadWriter, *Item) error) error {
+func (c *RedundantWriteClient) onItem(item *Item, fn memcacheOpFunc) error {
 	ss := c.selector.(*ServerList)
 	ss.lk.RLock()
 	defer ss.lk.RUnlock()
@@ -43,18 +46,11 @@ func (c *RedundantWriteClient) onItem(item *Item, fn func(*RedundantWriteClient,
 	}
 	var failCount = 0
 	var err error
-	var cn *conn
 	for _, addr := range ss.addrs {
-		cn, err = c.getConn(addr)
+		err = c.onAddrItem(addr, item, fn)
 		if err != nil {
 			log.Printf("[memcache] Operation failed on key = %s, err = %v", item.Key, err)
-			failCount += 1
-			continue
-		}
-		defer cn.condRelease(&err)
-		if err = fn(c, cn.rw, item); err != nil {
-			log.Printf("[memcache] Operation failed on key = %s, err = %v", item.Key, err)
-			failCount += 1
+			failCount++
 		}
 	}
 	if failCount >= len(ss.addrs) {
@@ -77,6 +73,19 @@ func (c *RedundantWriteClient) Delete(key string) error {
 		}
 	}
 	if failCount == len(ss.addrs) {
+		return err
+	}
+	return nil
+}
+
+// just like Client.onItem except with a specified address instead of using selector.PickServer
+func (c *RedundantWriteClient) onAddrItem(addr net.Addr, item *Item, fn memcacheOpFunc) error {
+	cn, err := c.getConn(addr)
+	if err != nil {
+		return err
+	}
+	defer cn.condRelease(&err)
+	if err = fn(c, cn.rw, item); err != nil {
 		return err
 	}
 	return nil

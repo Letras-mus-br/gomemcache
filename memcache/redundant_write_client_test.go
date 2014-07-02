@@ -2,6 +2,8 @@ package memcache
 
 import (
 	"testing"
+
+	"github.com/eapache/peroxide"
 )
 
 func TestRedundantLocalhost(t *testing.T) {
@@ -14,6 +16,43 @@ func TestRedundantLocalhostPartialFailure(t *testing.T) {
 	var servers = []string{"localhost:11211", "localhost:11213"}
 	setup(t, servers)
 	testWithRedundantPartialFailureClient(t, NewWithRedundancy(servers...))
+}
+
+func TestRedundantRecovery(t *testing.T) {
+	var servers = []string{"localhost:11213", "localhost:11211"}
+
+	prxy := peroxide.NewTCPListener(t, "localhost:11213", "localhost:11212")
+	defer prxy.Close()
+
+	setup(t, servers)
+	c := NewWithRedundancy(servers...)
+
+	_, promise := prxy.AcceptOne()
+	testCustomSet(t, c, "step 1")
+	(<-promise).Close()
+
+	testCustomSet(t, c, "step 2")
+
+	_, promise = prxy.AcceptOne()
+	testCustomSet(t, c, "step 3")
+
+	// Ensure redundancy
+	ss := c.selector.(*ServerList)
+	for _, addr := range ss.addrs {
+		err := c.getFromAddr(addr, []string{"foo"}, func(it *Item) {
+			if it.Key != "foo" {
+				t.Errorf("get(foo) Addr = %v, Key = %q, want foo", addr, it.Key)
+			}
+			if string(it.Value) != "step 3" {
+				t.Errorf("get(foo) Addr = %v, Value = %q, want fooval", addr, string(it.Value))
+			}
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	(<-promise).Close()
 }
 
 func TestRedundantLocalhostFullFailure(t *testing.T) {
@@ -140,4 +179,12 @@ func testWithRedundantFullFailureClient(t *testing.T, c *RedundantWriteClient) {
 		t.Errorf("add(bar), want error")
 	}
 
+}
+
+func testCustomSet(t *testing.T, c MemcacheClient, val string) {
+	foo := &Item{Key: "foo", Value: []byte(val), Flags: 123}
+	err := c.Set(foo)
+	checkErr(t, c, err, "first set(%s): %v", val, err)
+	err = c.Set(foo)
+	checkErr(t, c, err, "second set(%s): %v", val, err)
 }
