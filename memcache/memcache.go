@@ -126,6 +126,8 @@ func NewFromSelector(ss ServerSelector) *Client {
 type MemcacheClient interface {
 	Get(key string) (item *Item, err error)
 
+	Stats() (map[net.Addr]map[string]string, error)
+
 	Set(item *Item) error
 
 	Add(item *Item) error
@@ -327,6 +329,34 @@ func (c *Client) Get(key string) (item *Item, err error) {
 	return
 }
 
+func (c *Client) Stats() (map[net.Addr]map[string]string, error) {
+	var mu sync.Mutex
+	stats := make(map[net.Addr]map[string]string)
+	ch := make(chan error, buffered)
+	sn := 0
+	ss := c.selector.(*ServerList)
+	ss.lk.RLock()
+	defer ss.lk.RUnlock()
+	for _, addr := range ss.addrs {
+		sn += 1
+		go func() {
+			ch <- c.statsFromAddr(addr, func(stat map[string]string) {
+				mu.Lock()
+				defer mu.Unlock()
+				stats[addr] = stat
+			})
+		}()
+	}
+
+	var err error
+	for i := 0; i < sn; i++ {
+		if ge := <-ch; ge != nil {
+			err = ge
+		}
+	}
+	return stats, err
+}
+
 func (c *Client) withKeyAddr(key string, fn func(net.Addr) error) (err error) {
 	if !legalKey(key) {
 		return ErrMalformedKey
@@ -336,6 +366,37 @@ func (c *Client) withKeyAddr(key string, fn func(net.Addr) error) (err error) {
 		return err
 	}
 	return fn(addr)
+}
+
+func (c *Client) statsFromAddr(addr net.Addr, cb func(map[string]string)) error {
+	return c.withAddrRw(addr, func(rw *bufio.ReadWriter) error {
+		if _, err := fmt.Fprintf(rw, "stats\r\n"); err != nil {
+			return err
+		}
+		if err := rw.Flush(); err != nil {
+			return err
+		}
+		line, err := rw.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		if strings.Contains(line, "ERROR") {
+			return fmt.Errorf("memcached stats error: %s", strings.TrimSpace(line))
+		}
+		stats := make(map[string]string)
+		for err == nil && !strings.HasPrefix(line, "END") {
+			s := strings.SplitN(line, " ", 3)
+			if len(s) == 3 && s[0] == "STAT" {
+				stats[s[1]] = strings.TrimSpace(s[2])
+			}
+			line, err = rw.ReadString('\n')
+		}
+		if err != nil {
+			return err
+		}
+		cb(stats)
+		return nil
+	})
 }
 
 func (c *Client) withAddrRw(addr net.Addr, fn func(*bufio.ReadWriter) error) (err error) {
