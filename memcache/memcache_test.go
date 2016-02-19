@@ -164,6 +164,14 @@ func testIncrDecrWithClient(t *testing.T, c MemcacheClient) {
 	}
 }
 
+func testStatsWithClient(t *testing.T, c MemcacheClient) {
+	stats, err := c.Stats()
+	checkErr(t, c, err, "Stats: %v", err)
+	if n := len(stats); err != nil || n == 0 {
+		t.Errorf("Stats: didn't get stats")
+	}
+}
+
 func testWithClient(t *testing.T, c MemcacheClient) {
 
 	testSetWithClient(t, c)
@@ -178,4 +186,5 @@ func testWithClient(t *testing.T, c MemcacheClient) {
 
 	testIncrDecrWithClient(t, c)
 
+	testStatsWithClient(t, c)
 }
