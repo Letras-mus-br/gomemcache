@@ -18,7 +18,10 @@ limitations under the License.
 package memcache
 
 import (
+	"bufio"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
@@ -187,4 +190,34 @@ func testWithClient(t *testing.T, c MemcacheClient) {
 	testIncrDecrWithClient(t, c)
 
 	testStatsWithClient(t, c)
+}
+
+func BenchmarkOnItem(b *testing.B) {
+	fakeServer, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		b.Fatal("Could not open fake server: ", err)
+	}
+	defer fakeServer.Close()
+	go func() {
+		for {
+			if c, err := fakeServer.Accept(); err == nil {
+				go func() { io.Copy(ioutil.Discard, c) }()
+			} else {
+				return
+			}
+		}
+	}()
+
+	addr := fakeServer.Addr()
+	c := New(addr.String())
+	if _, err := c.getConn(addr); err != nil {
+		b.Fatal("failed to initialize connection to fake server")
+	}
+
+	item := Item{Key: "foo"}
+	dummyFn := func(_ *Client, _ *bufio.ReadWriter, _ *Item) error { return nil }
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		c.onItem(&item, dummyFn)
+	}
 }

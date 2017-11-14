@@ -64,13 +64,16 @@ var (
 	ErrNoServers = errors.New("memcache: no servers configured or available")
 )
 
-// DefaultTimeout is the default socket read/write timeout.
-const DefaultTimeout = time.Duration(100) * time.Millisecond
-
 const (
-	buffered            = 8 // arbitrary buffered channel size, for readability
-	maxIdleConnsPerAddr = 2 // TODO(bradfitz): make this configurable?
+	// DefaultTimeout is the default socket read/write timeout.
+	DefaultTimeout = 100 * time.Millisecond
+
+	// DefaultMaxIdleConns is the default maximum number of idle connections
+	// kept for any single address.
+	DefaultMaxIdleConns = 2
 )
+
+const buffered = 8 // arbitrary buffered channel size, for readability
 
 // resumableError returns true if err is only a protocol-level cache error.
 // This is used to determine whether or not a server connection should
@@ -149,6 +152,14 @@ type Client struct {
 	// If zero, DefaultTimeout is used.
 	Timeout time.Duration
 
+	// MaxIdleConns specifies the maximum number of idle connections that will
+	// be maintained per address. If less than one, DefaultMaxIdleConns will be
+	// used.
+	//
+	// Consider your expected traffic rates and latency carefully. This should
+	// be set to a number higher than your peak parallel requests.
+	MaxIdleConns int
+
 	selector ServerSelector
 
 	lk       sync.Mutex
@@ -215,7 +226,7 @@ func (c *Client) putFreeConn(addr net.Addr, cn *conn) {
 		c.freeconn = make(map[string][]*conn)
 	}
 	freelist := c.freeconn[addr.String()]
-	if len(freelist) >= maxIdleConnsPerAddr {
+	if len(freelist) >= c.maxIdleConns() {
 		cn.nc.Close()
 		return
 	}
@@ -244,6 +255,13 @@ func (c *Client) netTimeout() time.Duration {
 	return DefaultTimeout
 }
 
+func (c *Client) maxIdleConns() int {
+	if c.MaxIdleConns > 0 {
+		return c.MaxIdleConns
+	}
+	return DefaultMaxIdleConns
+}
+
 // ConnectTimeoutError is the error type used when it takes
 // too long to connect to the desired host. This level of
 // detail can generally be ignored.
@@ -260,25 +278,17 @@ func (c *Client) dial(addr net.Addr) (net.Conn, error) {
 		cn  net.Conn
 		err error
 	}
-	ch := make(chan connError)
-	go func() {
-		nc, err := net.Dial(addr.Network(), addr.String())
-		ch <- connError{nc, err}
-	}()
-	select {
-	case ce := <-ch:
-		return ce.cn, ce.err
-	case <-time.After(c.netTimeout()):
-		// Too slow. Fall through.
+
+	nc, err := net.DialTimeout(addr.Network(), addr.String(), c.netTimeout())
+	if err == nil {
+		return nc, nil
 	}
-	// Close the conn if it does end up finally coming in
-	go func() {
-		ce := <-ch
-		if ce.err == nil {
-			ce.cn.Close()
-		}
-	}()
-	return nil, &ConnectTimeoutError{addr}
+
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		return nil, &ConnectTimeoutError{addr}
+	}
+
+	return nil, err
 }
 
 func (c *Client) getConn(addr net.Addr) (*conn, error) {
