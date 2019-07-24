@@ -349,13 +349,13 @@ func (c *Client) Stats() (map[net.Addr]map[string]string, error) {
 	defer ss.lk.RUnlock()
 	for _, addr := range ss.addrs {
 		sn += 1
-		go func() {
+		go func(addr net.Addr) {
 			ch <- c.statsFromAddr(addr, func(stat map[string]string) {
 				mu.Lock()
 				defer mu.Unlock()
 				stats[addr] = stat
 			})
-		}()
+		}(addr)
 	}
 
 	var err error
