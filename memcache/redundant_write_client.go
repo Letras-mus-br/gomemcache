@@ -2,8 +2,10 @@ package memcache
 
 import (
 	"bufio"
+	"fmt"
 	"log"
 	"net"
+	"sync"
 )
 
 type memcacheOpFunc func(*RedundantWriteClient, *bufio.ReadWriter, *Item) error
@@ -45,16 +47,27 @@ func (c *RedundantWriteClient) onItem(item *Item, fn memcacheOpFunc) error {
 		return ErrNoServers
 	}
 	var failCount = 0
-	var err error
+	var wg sync.WaitGroup
+	errC := make(chan error, len(ss.addrs))
+
 	for _, addr := range ss.addrs {
-		err = c.onAddrItem(addr, item, fn)
+		wg.Add(1)
+		go func(addr net.Addr) {
+			errC <- c.onAddrItem(addr, item, fn)
+			wg.Done()
+		}(addr)
+	}
+	wg.Wait()
+	close(errC)
+
+	for err := range errC {
 		if err != nil {
 			log.Printf("[memcache] Operation failed on key = %s, err = %v", item.Key, err)
 			failCount++
 		}
 	}
 	if failCount >= len(ss.addrs) {
-		return err
+		return fmt.Errorf("[memcache] Operation failed on all instances for key = %s", item.Key)
 	}
 	return nil
 }
