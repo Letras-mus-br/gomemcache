@@ -3,7 +3,6 @@ package memcache
 import (
 	"bufio"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 )
@@ -62,7 +61,6 @@ func (c *RedundantWriteClient) onItem(item *Item, fn memcacheOpFunc) error {
 
 	for err := range errC {
 		if err != nil {
-			log.Printf("[memcache] Operation failed on key = %s, err = %v", item.Key, err)
 			failCount++
 		}
 	}
@@ -81,7 +79,6 @@ func (c *RedundantWriteClient) Delete(key string) error {
 			return writeExpectf(rw, resultDeleted, "delete %s\r\n", key)
 		})
 		if err != nil {
-			log.Printf("[memcache] Delete operation failed on key = %s, err = %v", key, err)
 			failCount += 1
 		}
 	}
